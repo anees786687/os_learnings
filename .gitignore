@@ -1,0 +1,9 @@
+# Compiled executables (build them with `make`).
+# They have no extension, so ignore everything in a program directory except its sources.
+# Add the same two lines for each new directory of programs.
+standalone/*
+!standalone/*.c
+*.o
+
+# Editor files (includes the large IntelliSense database)
+.vscode/
