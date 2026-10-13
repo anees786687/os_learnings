@@ -91,7 +91,7 @@ int main(int argc, char * argv[]) {
                     printf(RED "Overflow possible! Exiting...\n" RESET);
                     return 1;
                 }
-)
+
                 number = 3 * number + 1;
             }
             printf(GREEN "%ld, " RESET, number);

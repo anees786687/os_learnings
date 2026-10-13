@@ -9,6 +9,7 @@ Solutions to the programming exercises of the Processes chapter, with what each 
 | [q_1.c](q_1.c) | Zombie processes | A child that has exited stays in the process table until its parent calls `wait()`. |
 | [q_2.c](q_2.c) | Pid manager, bitmaps | Tracking which PIDs are in use with one bit per PID. |
 | [q_3.c](q_3.c) | Collatz sequence, `fork()` + `wait()` | Work done in a child stays in the child's copy of the data, so the child has to print it. |
+| [q_4.c](q_4.c) | Collatz sequence through shared memory | A child hands its results to the parent through a region both have mapped, and the parent checks how the child ended before using them. |
 
 ## q_1: creating a zombie process
 
@@ -201,3 +202,134 @@ The program exits with status 1 and the parent's "complete" line is not printed,
 - **`if` / `if` / `else` is not `if` / `else if` / `else`.** The first fork check was a separate `if (pid < 0)` followed by `if (pid == 0) ... else ...`. The `else` belongs to the second `if` only, so after a failed fork `perror()` ran and then the parent branch ran as well: `wait()` with no child, followed by "Child process complete!".
 - **A failure needs a non-zero exit status.** With the `else if` in place the failure branch still fell through to `return 0`, reporting success. It now returns 1, like the validation branches.
 - **Making `fork()` fail on purpose.** A failure branch that has never run is untested. `prlimit --nproc=1 ./q_3 8` (or `ulimit -u` in a subshell) makes `fork()` return -1 with `EAGAIN`, which `perror()` prints as "Resource temporarily unavailable".
+
+## q_4: the Collatz sequence through shared memory
+
+**Task:** the same sequence as in q_3, but printed by the **parent**. In q_3 the child had to print it, because the two processes have separate copies of the data. Here the parent creates a shared memory object, the child writes the sequence into it, and the parent outputs it after the child has finished. The steps the book lays out:
+
+1. Establish the shared memory object (`shm_open()`, `ftruncate()`, `mmap()`).
+2. Create the child process and wait for it to terminate.
+3. Output the contents of shared memory.
+4. Remove the shared memory object.
+
+The background on shared memory itself, what each call does and how the page tables make it work, is in [standalone/shared_memory/](../standalone/shared_memory/README.md). This section covers what is specific to the exercise.
+
+**How it works:**
+
+| Order | Process | Step |
+| --- | --- | --- |
+| 1 | parent | Validates the argument, exactly as in q_3. |
+| 2 | parent | Creates the object `"COMMON"`, sizes it to 4096 bytes and maps it. |
+| 3 | parent | Stores the starting number in the first slot. |
+| 4 | parent | Calls `fork()`. The child inherits the mapping. |
+| 5 | child | Computes each term and stores it in the next slot. The last one stored is 1. |
+| 6 | parent | `wait(&child_stat)` blocks until the child has terminated. |
+| 7 | parent | `shm_unlink()` removes the name. |
+| 8 | parent | Checks how the child ended. Only after a clean exit, prints the slots up to and including the 1. |
+
+The region is used as an array of `long int`:
+
+```
+long int * shared = ptr;
+
+ shared[0]  shared[1]  shared[2]  shared[3]  shared[4]       ...    shared[511]
++----------+----------+----------+----------+----------+----------+----------+
+|    8     |    4     |    2     |    1     |    0     |   ...    |    0     |
++----------+----------+----------+----------+----------+----------+----------+
+ parent     child      child      child      untouched, still zero
+ byte 0     byte 8     byte 16    byte 24                           byte 4088
+```
+
+4096 bytes ÷ 8 bytes per `long` gives 512 slots, which the program computes as `MAX_NUMS = SIZE / sizeof(long int)`.
+
+### Running it
+
+```sh
+make            # from the repository root, or: gcc -Wall -Wextra -o q_4 q_4.c
+./q_4 35
+```
+
+### Output
+
+```
+$ ./q_4 35
+35 106 53 160 80 40 20 10 5 16 8 4 2 1 
+Exiting Parent process
+```
+
+Both lines are printed by the parent. The child prints nothing unless something goes wrong.
+
+Invalid input is rejected before the object is created, with exit status 1. The checks are the ones from q_3, plus one for a number that does not fit in a `long`:
+
+| Command | Output | Check that caught it |
+| --- | --- | --- |
+| `./q_4` or `./q_4 3 8` | `Usage: ./q_4 <positive integer>` | `argc != 2` |
+| `./q_4 abc` | `No numbers found in the string` | `num_str == endptr` |
+| `./q_4 12abc` | `String is alphanumeric` | `*endptr != '\0'` |
+| `./q_4 -5` | `Number must be positive!` | `num <= 0` |
+| `./q_4 99999999999999999999` | `strtol: Numerical result out of range` | `errno == ERANGE` |
+
+Failures that happen after the object exists:
+
+| Command | Output | What happened |
+| --- | --- | --- |
+| `./q_4 9223372036854775806` | `Overflow possible! Exiting...` then `Overflow occurred!` | The second term is odd and too large for `3 * num + 1`. The child returns 1; the parent reads that status and does not print the region. |
+| `./q_4 63728127` | `Shared memory consumed entirely!` | The sequence has 950 terms and the region holds 512. The child returns 2. |
+| `prlimit --nproc=1 ./q_4 8` | `Failed to fork!` | `fork()` returned -1. No child exists, so the parent unlinks and exits. |
+
+All three exit with status 1, and after every one of them `ls /dev/shm` shows no `COMMON` left behind. The fourth branch, a child killed by a signal, exists in the code but was not triggered in testing.
+
+### Learnings
+
+**Sharing across `fork()`**
+
+- **What the child inherits.** `fork()` copies the parent's address space, mappings included. A mapping made with `MAP_SHARED` stays shared in the copy: both processes' page tables lead to the same frame. The child therefore uses the pointer it inherited and never calls `shm_open()` or `mmap()` itself.
+- **What stays private.** Everything else. `num` and `i` are changed in the child and the parent's copies do not move, exactly as in q_3. Only what is written through `shared` crosses over.
+- **The name is barely needed.** A name exists so that an unrelated process can find the object with `shm_open()`, as the consumer does in the standalone example. Between a parent and its child the inherited mapping is enough.
+
+**Raw data in shared memory**
+
+- **Writer and reader must agree on the format.** The standalone example stores text and reads it back as text. This program stores the 8 bytes of each `long` as they are and reads them back the same way. Either works; mixing them does not.
+- **Giving the region a type.** `mmap()` returns a `void *`, an address with no type that cannot be dereferenced. Assigning it to a `long int *` tells the compiler what lives there: `*shared = num` stores a `long`, and `shared[i]` is the i-th one.
+- **Pointer arithmetic counts elements.** `shared + 1` moves 8 bytes, one `long`. `shared + sizeof(long)` would move 8 elements, 64 bytes. On a `void *`, GCC counts in bytes, which is why the same `+= 8` means different things on the two pointers.
+- **Index, do not move the pointer.** `shared[i]` leaves `shared` pointing at the start, so the reader can find the beginning without a saved copy.
+- **Marking the end.** There is no `'\0'` in an array of numbers, and the child's counter `i` is private to the child. The sequence always ends in 1, so the 1 serves as the terminator and the parent reads until it sees it.
+- **Looking at it from outside.** `od -t d8 /dev/shm/COMMON` prints the object as 8-byte integers, independent of the program's own printing code. (The name has to exist for that, so the `shm_unlink()` has to be commented out for the experiment.)
+
+**Bounds**
+
+- **Nothing guards the edge of a mapping.** Writing `shared[512]` is a write outside the region. The index is tested against `MAX_NUMS` before every write.
+- **Derive the limit, do not type it.** `MAX_NUMS` comes from `SIZE`. A literal `512` in the loop would be silently wrong after a change to `SIZE`.
+- **A bigger region costs nothing until it is used.** `ftruncate()` and `mmap()` only record a size and reserve addresses; frames are assigned page by page on first touch. `SIZE` could be far larger without using more RAM for a short sequence. The bound check is needed either way, since no maximum length of a Collatz sequence is known.
+
+**Finding out how the child ended**
+
+- **`wait(NULL)` throws the answer away.** `wait(&status)` stores how the child ended in `status`, a packed value decoded with macros from `<sys/wait.h>`:
+
+  | Macro | Meaning |
+  | --- | --- |
+  | `WIFEXITED(status)` | The child ended by returning from `main` or calling `exit()` |
+  | `WEXITSTATUS(status)` | The value it returned. Only valid when `WIFEXITED` is true |
+  | `WIFSIGNALED(status)` | The child was killed by a signal, such as a segmentation fault |
+
+- **`wait()` returning -1 is something else.** It means `wait()` itself failed, for example because there is no child. A child that failed is still a successful `wait()`.
+- **Exit codes as a small protocol.** The child returns 0 for a complete sequence, 1 for arithmetic overflow and 2 for a full region, and the parent prints a different message for each.
+- **Why it matters here.** The parent's read loop stops at a 1. If the child stopped early, there is no 1 in the region, and the loop would run past the end of the mapping. The exit status is what tells the parent that the terminator is really there.
+
+**Cleaning up**
+
+- **Unlink in the process that outlives the other.** The parent created the object and is still running after the child is gone, so it does the unlinking. The child has three ways to exit, and unlinking there meant one call per exit.
+- **One call after `wait()`** covers the success path and all three failure branches, because every one of them comes after that line.
+- **Unlinking does not take the data away.** `shm_unlink()` removes the name; the memory is freed when the last mapping is gone. The parent unlinks first and reads afterwards.
+- **Every early return needs it too.** Once `shm_open()` has succeeded the object exists, so the `ftruncate()`, `mmap()` and `fork()` failure branches each unlink before returning.
+
+**Bugs hit along the way**
+
+- **52 for an input of 4.** The first version wrote with `sprintf(ptr, "%ld", num)` and read with `*(long int *)ptr`. `sprintf()` stores the character `'4'`, which is the byte 52, and the read interpreted that byte as a number. `35` came out as 13619: `'3'` is 0x33 and `'5'` is 0x35, and on a little-endian machine the two bytes read as 0x3533.
+- **An endless row of 3s.** The loop tested and computed from `num` but stored the result in a second variable, `term`, and never updated `num`. Every pass computed 6 / 2 = 3 again and the loop could not reach 1.
+- **Garbage after the 3s.** With no bound, the child filled all 512 slots and wrote on past the mapping until it was killed by a segmentation fault. Nothing reported it, because the parent called `wait(NULL)`. The parent then read past the region as well, printing whatever followed in memory until some unrelated value happened to be 1.
+- **The starting number disappeared.** The parent stored it in `shared[0]` and the child's index also started at 0, overwriting it with the second term. The child now starts at 1.
+- **`0 -2147483648` for 8589934592.** The parent read each `long` into an `int` and printed it with `%d`, which keeps only the low 32 bits. The first two terms, 4294967296 and 2147483648, do not fit.
+- **Garbage when the child gave up.** After an overflow the child returned 1 without writing a terminating 1, and the parent printed the region regardless. This is what the status check after `wait()` fixes.
+- **Objects left in `/dev/shm`.** The child unlinked at the end of its normal path only, so its early returns and a failed `fork()` each left `COMMON` behind. Moving the cleanup to the parent fixed all of them at once.
+- **The compiler pointed at one more.** After `MAX_NUMS` was introduced, `-Wall -Wextra` reported it as an unused variable: the loop was still comparing against the literal `512`.
