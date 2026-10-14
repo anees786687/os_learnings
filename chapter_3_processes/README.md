@@ -10,6 +10,7 @@ Solutions to the programming exercises of the Processes chapter, with what each 
 | [q_2.c](q_2.c) | Pid manager, bitmaps | Tracking which PIDs are in use with one bit per PID. |
 | [q_3.c](q_3.c) | Collatz sequence, `fork()` + `wait()` | Work done in a child stays in the child's copy of the data, so the child has to print it. |
 | [q_4.c](q_4.c) | Collatz sequence through shared memory | A child hands its results to the parent through a region both have mapped, and the parent checks how the child ended before using them. |
+| [q_5.c](q_5.c) | Quote of the day, TCP sockets | A client that connects to a real QOTD service on port 17, run by systemd socket activation, and prints the quote it sends. |
 
 ## q_1: creating a zombie process
 
@@ -333,3 +334,157 @@ All three exit with status 1, and after every one of them `ls /dev/shm` shows no
 - **Garbage when the child gave up.** After an overflow the child returned 1 without writing a terminating 1, and the parent printed the region regardless. This is what the status check after `wait()` fixes.
 - **Objects left in `/dev/shm`.** The child unlinked at the end of its normal path only, so its early returns and a failed `fork()` each left `COMMON` behind. Moving the cleanup to the parent fixed all of them at once.
 - **The compiler pointed at one more.** After `MAX_NUMS` was introduced, `-Wall -Wextra` reported it as an unused variable: the loop was still comparing against the literal `512`.
+
+## q_5: a quote-of-the-day client
+
+**Task:** port numbers below 1024 are *well known*: each one belongs to a standard service. Port 17 is the **Quote of the Day** (QOTD) service, defined in RFC 865. When a client connects, the server sends a quote and closes the connection. The book asks for its date server (Figure 3.21) to be changed to send a quote of fewer than 512 printable ASCII characters. Because port 17 is normally unavailable, the server is to listen on port 6017, and the date client (Figure 3.22) is used to read the quotes.
+
+**What was done instead:** port 17 was not left unavailable. A real QOTD service was set up on this machine with systemd, the steps are [below](#setting-up-a-qotd-server-on-port-17), and **q_5.c is the client** for it. The server side is not written in C at all: systemd listens on the port, and the quote comes from the `fortune` program. The book's version, a C server on port 6017, is not part of this solution.
+
+The sockets API itself, what each call does and why, is covered in [standalone/socket_programming/](../standalone/socket_programming/README.md). This section covers what is specific to the exercise.
+
+**How it works:**
+
+| Order | Who | Step |
+| --- | --- | --- |
+| 1 | q_5 | `socket()` creates an IPv4 TCP socket. |
+| 2 | q_5 | `connect()` to port 17 on this machine. |
+| 3 | systemd | `qotd.socket` is listening on port 17 and accepts the connection. Because of `Accept=yes`, it starts a new instance of `qotd@.service` for this one connection. |
+| 4 | fortune | `/usr/games/fortune` runs with its standard output **connected to the socket**, so it does not have to know it is talking to the network. It prints a random quote and exits. |
+| 5 | systemd | The service has ended, so the connection is closed. |
+| 6 | q_5 | `recv()` reads the quote into a 512-byte buffer, prints it and `close()`s the socket. |
+
+```
+   q_5 (client)                systemd                          fortune
+  -------------           -----------------                   ----------
+  socket()
+  connect()  ------->     qotd.socket (port 17)
+                          accept, start qotd@.service ------->  runs, prints
+  recv()     <-------------------------------------- quote ---  stdout = socket
+  printf()                                                       exits
+  close()                 connection closed
+```
+
+### Running it
+
+The QOTD service must be running first ([setup below](#setting-up-a-qotd-server-on-port-17)).
+
+```sh
+make            # from the repository root, or: gcc -Wall -Wextra -o q_5 q_5.c
+./q_5
+```
+
+### Output
+
+```
+$ ./q_5
+Received message: Life is to you a dashing and bold adventure.
+```
+
+The quote is different on every run, since a new `fortune` process picks one for each connection.
+
+If `qotd.socket` is not running, nothing is listening on port 17. `connect()` then fails, the program prints `connect: Connection refused` and exits with status 1.
+
+### Setting up a QOTD server on port 17
+
+These steps are for Ubuntu 22.04. They use **systemd socket activation**: systemd itself listens on port 17 and starts the quote program only when a client connects. It is the modern form of the old `inetd` super-server.
+
+**Step 1: install the quote generator.** `fortune-mod` provides `fortune`, which prints a random quote or joke from its database.
+
+```sh
+sudo apt update
+sudo apt install fortune-mod
+```
+
+**Step 2: create the service unit.** This is a *template* unit, which the `@` in the name marks. systemd starts one instance of it per connection. It connects `fortune`'s standard input and output to the network socket.
+
+```sh
+sudo nano /etc/systemd/system/qotd@.service
+```
+
+```ini
+[Unit]
+Description=Quote of the Day Server (RFC 865)
+
+[Service]
+ExecStart=-/usr/games/fortune
+StandardInput=socket
+StandardOutput=socket
+```
+
+| Line | Meaning |
+| --- | --- |
+| `ExecStart=-/usr/games/fortune` | The program to run for each connection. The leading `-` means a non-zero exit code is not treated as a failure. |
+| `StandardInput=socket` | `fortune`'s stdin is the connection. |
+| `StandardOutput=socket` | `fortune`'s stdout is the connection, so whatever it prints goes to the client. |
+
+**Step 3: create the socket unit.** This one makes systemd bind to port 17. The socket unit and the service template share the name `qotd`, and that is how systemd knows which service the socket starts.
+
+```sh
+sudo nano /etc/systemd/system/qotd.socket
+```
+
+```ini
+[Unit]
+Description=Quote of the Day Socket
+
+[Socket]
+ListenStream=17
+Accept=yes
+
+[Install]
+WantedBy=sockets.target
+```
+
+| Line | Meaning |
+| --- | --- |
+| `ListenStream=17` | Listen on TCP port 17. TCP only: UDP would need a separate `ListenDatagram=17` line. |
+| `Accept=yes` | systemd calls `accept()` itself and starts one service instance per connection, handing it the connected socket. This is the listening-socket / connected-socket split from `accept()`. It needs a connection-oriented (stream) socket, i.e. TCP. |
+| `WantedBy=sockets.target` | When enabled, the socket starts at boot. |
+
+**Step 4: reload systemd and start the socket.** `daemon-reload` makes systemd read the new unit files. `enable --now` starts the socket immediately and at every boot.
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now qotd.socket
+```
+
+Binding to a port below 1024 needs root. This works because systemd runs as root and does the binding; `fortune` itself never needs the privilege.
+
+**Step 5: open the firewall.** This allows port 17 through UFW (Uncomplicated Firewall). It only matters for clients on other machines, because traffic to `localhost` is not filtered by the default UFW rules.
+
+```sh
+sudo ufw allow 17/tcp
+```
+
+**Step 6: verify and test.**
+
+```sh
+systemctl status qotd.socket    # should show "active (listening)"
+nc localhost 17                 # netcat as a ready-made client: prints a quote
+```
+
+`nc` doing the same job as `./q_5` is a quick way to tell apart a problem in the service from a problem in the program.
+
+**To turn it off again:**
+
+```sh
+sudo systemctl disable --now qotd.socket
+sudo ufw delete allow 17/tcp
+```
+
+### Learnings
+
+- **Well-known ports.** Ports 0 to 1023 are assigned to standard services (17 QOTD, 13 daytime, 22 SSH, 80 HTTP). On Linux only root may bind to them, which is why the book moves the exercise to 6017.
+- **The client does not care what the server is.** q_5 only knows "TCP, port 17". It cannot tell a hand-written C server from systemd plus `fortune`, and `nc` cannot tell q_5's role apart from its own. That is the point of a protocol.
+- **Socket activation.** Nothing runs between connections: systemd holds the listening socket, and a `fortune` process exists only while it serves one client. A server written in C would instead loop on `accept()` and stay in memory all the time.
+- **A socket is a file descriptor.** `StandardOutput=socket` works because a connected socket can stand in for stdout. `fortune` uses ordinary `write()`s and does not know there is a network.
+- **One quote, then hang up.** RFC 865 has the server send one quote and close the connection, so the client needs only one `connect()` and one `recv()`, and sends nothing.
+
+### Questions to explore next
+
+1. The question asks for a *server* on port 6017. What would `tcp_server.c` from [socket_programming](../standalone/socket_programming/) need to change to become one? The port is the easy part. How would it hold several quotes and pick one, and how would it keep serving clients after the first one?
+2. `qotd` is never zeroed and only 512 bytes are read. If the quote is shorter than 512 bytes, what comes after it in the buffer? Does `printf("%s")` know where the quote ends? What does `recv()`'s return value tell you that would make this safe?
+3. If the quote were 512 bytes or longer, where would the terminating `'\0'` be? `fortune -s` limits it to short quotes. How long are those?
+4. RFC 865 also defines QOTD over UDP. What would change in the unit file and in q_5.c to use it, and which calls would the client no longer need?
+5. Change `QOTD_PORT` to 6017 without a server running there. What error do you get, and how is it different from what a firewall that silently drops packets would cause?

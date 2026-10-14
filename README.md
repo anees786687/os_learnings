@@ -19,7 +19,7 @@ cd ..
 make clean      # removes the executables
 ```
 
-The Makefile picks up every `.c` file in this directory and its subdirectories, so a new program only has to be dropped into a folder.
+The Makefile picks up every `.c` file in this directory and up to two directories below it, so a new program only has to be dropped into a folder.
 
 To build a single program by hand: `gcc -Wall -Wextra -o standalone/test_1 standalone/test_1.c`
 
@@ -28,7 +28,9 @@ To build a single program by hand: `gcc -Wall -Wextra -o standalone/test_1 stand
 | Directory | Contents |
 | --- | --- |
 | [standalone/](standalone/) | Self-contained programs on process creation, waiting and `exec` |
-| [chapter_3_processes/](chapter_3_processes/) | Silberschatz chapter 3 programming exercises: zombie process, pid manager. Details in its [README](chapter_3_processes/README.md) |
+| [standalone/shared_memory/](standalone/shared_memory/) | A producer and a consumer that communicate through POSIX shared memory. The lesson is in its [README](standalone/shared_memory/README.md) |
+| [standalone/socket_programming/](standalone/socket_programming/) | A TCP server and client that talk over a socket on port 9002: `socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recv`. The lesson is in its [README](standalone/socket_programming/README.md) |
+| [chapter_3_processes/](chapter_3_processes/) | Silberschatz chapter 3 programming exercises: zombie process, pid manager, Collatz sequence in a child process, the same sequence passed to the parent through shared memory, and a quote-of-the-day client for a systemd service on port 17. Details in its [README](chapter_3_processes/README.md) |
 
 Directories are named after the textbook chapter they belong to. The rest of this page covers the standalone programs and the concepts behind them.
 
@@ -112,7 +114,7 @@ The scheduler decides which of the two runs first, so their output order is not 
 
 ### Separate address spaces
 
-The child starts with a copy of the parent's memory. After the fork the two are independent: writing to a variable in one process does not affect the other. Processes that need to share data must use an explicit mechanism for it.
+The child starts with a copy of the parent's memory. After the fork the two are independent: writing to a variable in one process does not affect the other. Processes that need to share data must use an explicit mechanism for it. One such mechanism is shared memory, where two processes map the same physical pages: see [standalone/shared_memory/](standalone/shared_memory/README.md). Another is message passing over sockets, which also works between processes on different machines: see [standalone/socket_programming/](standalone/socket_programming/README.md).
 
 ### Waiting for a child: `wait()`
 
@@ -148,6 +150,21 @@ execlp("./test_4_1", "test_4_1", num_str, (char *)NULL);
 - `argv[argc]` is guaranteed to be `NULL`.
 - Arguments are always strings. Numbers have to be converted.
 
+`argc` has to be checked before any `argv[i]` beyond `argv[0]` is used:
+
+```c
+if (argc != 2) {
+    printf("Usage: %s <positive integer>\n", argv[0]);
+    return 1;
+}
+```
+
+- With no user argument `argc` is 1, so `argv[1]` is `argv[argc]`, the `NULL` pointer. Passing it to `strtol()` is a segmentation fault.
+- `argc != 2` accepts exactly one user argument. `argc < 2` only catches too few and lets extra arguments through unnoticed.
+- `argv[0]` in the message prints the name the program was run as, so the usage line stays right if the executable is renamed.
+- The check goes at the top of `main`, above the first line that reads `argv[1]`.
+- Compiling with `-Wall -Wextra` gives `unused parameter 'argc'` when a program reads `argv` without ever looking at `argc`, which is a sign the check is missing.
+
 ### Converting a string to a number: `strtol()`
 
 `long strtol(const char *str, char **endptr, int base)` converts and also reports where it stopped, which makes validation possible:
@@ -157,6 +174,26 @@ execlp("./test_4_1", "test_4_1", num_str, (char *)NULL);
 | `endptr == str` | no digits were read, there is no number |
 | `*endptr != '\0'` | a number was read but is followed by other characters (`"12abc"`) |
 | `*endptr == '\0'` | the whole string was a number |
+
+`endptr` does not catch a number that is too large for a `long`. That is reported through `errno`, covered next.
+
+### Detecting errors with `errno`
+
+`errno` is a global `int` provided by `<errno.h>`. Library functions and system calls store an error code in it when they fail. It is not declared by the program, only used:
+
+```c
+errno = 0;                                   /* clear any old error */
+long number = strtol(str, &endptr, 10);
+if (errno == ERANGE) {
+    /* the number does not fit in a long */
+}
+```
+
+- **Why the return value is not enough.** On overflow `strtol()` returns `LONG_MAX` (or `LONG_MIN`), but `LONG_MAX` is also the correct result for the string `"9223372036854775807"`. Only `errno` tells the two apart.
+- **Why it is set to 0 first.** A function writes to `errno` when it fails and leaves it alone when it succeeds. Without the reset, a value left behind by an earlier call would be mistaken for a failure of this one.
+- **Check it straight away.** Any library call in between, a `printf` included, may change `errno`.
+- **`ERANGE`** is the code for "result out of range". Codes are named constants from `<errno.h>`; another common one is `EAGAIN`, which a failed `fork()` sets.
+- **`perror(msg)`** reads `errno` and prints `msg` followed by the matching description, e.g. `fork: Resource temporarily unavailable`.
 
 ## Function reference
 
@@ -170,8 +207,10 @@ execlp("./test_4_1", "test_4_1", num_str, (char *)NULL);
 | `wait(&status)` | `<sys/wait.h>` | Block until a child terminates |
 | `strtol(str, &endptr, base)` | `<stdlib.h>` | Convert a string to a `long` |
 | `perror(msg)` | `<stdio.h>` | Print why the last system call failed |
+| `errno` | `<errno.h>` | Error code of the last failed call; a variable, not a function |
+| `close(fd)` | `<unistd.h>` | Release a file descriptor: a file, a shared memory object or a socket |
 
-`pid_t`, the type used for process IDs, comes from `<sys/types.h>`.
+`pid_t`, the type used for process IDs, comes from `<sys/types.h>`. The socket calls (`socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recv`) are listed in the [socket_programming README](standalone/socket_programming/README.md#function-reference).
 
 ## Things that are easy to get wrong
 
@@ -181,3 +220,8 @@ execlp("./test_4_1", "test_4_1", num_str, (char *)NULL);
 - Writing code after `exec` and expecting it to run on success.
 - Running `test_4` from another directory (e.g. `./standalone/test_4 5`): it loads `./test_4_1`, a path relative to the current directory, so `cd standalone` first.
 - Not checking the return value of `fork()` and `exec` for failure.
+- Checking `errno` without setting it to 0 before the call, or after another library call has had the chance to change it.
+- Testing `strtol()`'s return value against `LONG_MAX` to detect overflow: `LONG_MAX` is also a valid result.
+- Passing a value where a system call expects a pointer, e.g. `sizeof(addr)` as the last argument of `accept()`. The compiler only warns (`makes pointer from integer without a cast`), so compile with `-Wall -Wextra` and read the warnings.
+- Calling a function without including its header (`implicit declaration of function`), e.g. `close()` without `<unistd.h>`. `man 2 <name>` lists the header in its SYNOPSIS.
+- Reading `argv[1]` without checking `argc` first: with no argument it is `NULL`, and the program crashes instead of printing an error.

@@ -3,6 +3,10 @@
 # Add the same two lines for each new directory of programs.
 standalone/*
 !standalone/*.c
+!standalone/shared_memory/
+standalone/shared_memory/*
+!standalone/shared_memory/*.c
+!standalone/shared_memory/README.md
 *.o
 
 # Editor files (includes the large IntelliSense database)

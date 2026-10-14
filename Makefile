@@ -1,8 +1,8 @@
 CC = gcc
 CFLAGS = -Wall -Wextra
 
-# Every .c file here and one directory down is built into its own executable
-SOURCES = $(wildcard *.c */*.c)
+# Every .c file here and up to two directories down is built into its own executable
+SOURCES = $(wildcard *.c */*.c */*/*.c)
 PROGRAMS = $(SOURCES:.c=)
 
 all: $(PROGRAMS)

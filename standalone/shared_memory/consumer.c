@@ -3,10 +3,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <sys/shm.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <errno.h>
 
 /*
 In this program we read a message from a POSIX shared memory object and print it.
