@@ -10,7 +10,7 @@ Solutions to the programming exercises of the Processes chapter, with what each 
 | [q_2.c](q_2.c) | Pid manager, bitmaps | Tracking which PIDs are in use with one bit per PID. |
 | [q_3.c](q_3.c) | Collatz sequence, `fork()` + `wait()` | Work done in a child stays in the child's copy of the data, so the child has to print it. |
 | [q_4.c](q_4.c) | Collatz sequence through shared memory | A child hands its results to the parent through a region both have mapped, and the parent checks how the child ended before using them. |
-| [q_5.c](q_5.c) | Quote of the day, TCP sockets | A client that connects to a real QOTD service on port 17, run by systemd socket activation, and prints the quote it sends. |
+| [q_5/](q_5/) | Quote of the day, TCP sockets, `popen()` | A server on port 6017 that answers each client with a quote produced by the `fortune` program, and a client that prints it. |
 
 ## q_1: creating a zombie process
 
@@ -335,57 +335,132 @@ All three exit with status 1, and after every one of them `ls /dev/shm` shows no
 - **Objects left in `/dev/shm`.** The child unlinked at the end of its normal path only, so its early returns and a failed `fork()` each left `COMMON` behind. Moving the cleanup to the parent fixed all of them at once.
 - **The compiler pointed at one more.** After `MAX_NUMS` was introduced, `-Wall -Wextra` reported it as an unused variable: the loop was still comparing against the literal `512`.
 
-## q_5: a quote-of-the-day client
+## q_5: a quote-of-the-day server
 
-**Task:** port numbers below 1024 are *well known*: each one belongs to a standard service. Port 17 is the **Quote of the Day** (QOTD) service, defined in RFC 865. When a client connects, the server sends a quote and closes the connection. The book asks for its date server (Figure 3.21) to be changed to send a quote of fewer than 512 printable ASCII characters. Because port 17 is normally unavailable, the server is to listen on port 6017, and the date client (Figure 3.22) is used to read the quotes.
-
-**What was done instead:** port 17 was not left unavailable. A real QOTD service was set up on this machine with systemd, the steps are [below](#setting-up-a-qotd-server-on-port-17), and **q_5.c is the client** for it. The server side is not written in C at all: systemd listens on the port, and the quote comes from the `fortune` program. The book's version, a C server on port 6017, is not part of this solution.
+**Task:** port numbers below 1024 are *well known*: each one belongs to a standard service. Port 17 is the **Quote of the Day** (QOTD) service, defined in RFC 865. When a client connects, the server sends a quote and closes the connection. The book asks for its date server (Figure 3.21) to be changed so it delivers a quote instead of the date. The quote must be fewer than 512 printable ASCII characters and may span several lines. Port 17 is well known and therefore unavailable, so the server listens on **port 6017**. The date client (Figure 3.22) is used to read the quotes.
 
 The sockets API itself, what each call does and why, is covered in [standalone/socket_programming/](../standalone/socket_programming/README.md). This section covers what is specific to the exercise.
 
-**How it works:**
-
-| Order | Who | Step |
+| File | Role | What it does |
 | --- | --- | --- |
-| 1 | q_5 | `socket()` creates an IPv4 TCP socket. |
-| 2 | q_5 | `connect()` to port 17 on this machine. |
-| 3 | systemd | `qotd.socket` is listening on port 17 and accepts the connection. Because of `Accept=yes`, it starts a new instance of `qotd@.service` for this one connection. |
-| 4 | fortune | `/usr/games/fortune` runs with its standard output **connected to the socket**, so it does not have to know it is talking to the network. It prints a random quote and exits. |
-| 5 | systemd | The service has ended, so the connection is closed. |
-| 6 | q_5 | `recv()` reads the quote into a 512-byte buffer, prints it and `close()`s the socket. |
+| [q_5/qotd_server.c](q_5/qotd_server.c) | Server | Binds to port 6017. For each client: runs `fortune` with `popen()`, collects its output into a quote of fewer than 512 characters, and sends it, or an error message if the quote is too long. Stops after `MAX_QUOTES` (3) clients. |
+| [q_5/qotd_client.c](q_5/qotd_client.c) | Client | The date client's counterpart. Connects to port 6017, receives one quote and prints it. |
+
+**How it works:** the server does the socket setup once, then loops once per client.
+
+| Order | Process | Step |
+| --- | --- | --- |
+| 1 | server | `socket()`, `setsockopt(SO_REUSEADDR)` and `bind()` to `0.0.0.0:6017`, once. |
+| 2 | server | `listen()`, then `accept()` blocks until a client connects. |
+| 3 | client | `connect()`. The handshake completes and `accept()` returns a socket for this client. |
+| 4 | server | `popen("fortune", "r")` starts `fortune` in a child process and returns a `FILE *` connected to its output. |
+| 5 | fortune | Prints a random quote and exits. |
+| 6 | server | Clears `msg`. `fgets()` reads the output in pieces of up to 63 characters, and `strcat()` appends them to `msg` while the total stays under 511. If a quote would go over, `msg` is replaced with `Error! Quote too long, try again!...`. |
+| 7 | server | `send()` writes all 512 bytes of `msg` to the client's socket. |
+| 8 | client | `recv()` reads the 512 bytes and prints them as a string. |
+| 9 | server | `pclose()` collects the `fortune` child, `close()` ends this client's connection, and the loop goes back to step 2. After 3 clients it closes the listening socket and exits. |
 
 ```
-   q_5 (client)                systemd                          fortune
-  -------------           -----------------                   ----------
-  socket()
-  connect()  ------->     qotd.socket (port 17)
-                          accept, start qotd@.service ------->  runs, prints
-  recv()     <-------------------------------------- quote ---  stdout = socket
-  printf()                                                       exits
-  close()                 connection closed
+   qotd_client                 qotd_server                        fortune
+  -------------           ----------------------                ----------
+                          socket(), setsockopt()
+                          bind() :6017
+  socket()                listen()
+  connect()  ---------->  accept()
+                          popen("fortune") ------- pipe ------>  starts,
+                          fgets() + strcat()  <---------------   prints a quote,
+                          (stop at 511 chars)                     exits
+  recv()     <----------  send(msg)
+  printf()                pclose(), close(client_socket)
+  close()                 back to accept() for the next client
+                          ... after 3 clients: close(listening socket), exit
 ```
 
 ### Running it
 
-The QOTD service must be running first ([setup below](#setting-up-a-qotd-server-on-port-17)).
-
 ```sh
-make            # from the repository root, or: gcc -Wall -Wextra -o q_5 q_5.c
-./q_5
+make                 # from the repository root
+cd chapter_3_processes/q_5
+./qotd_server        # terminal 1: waits for clients
+./qotd_client        # terminal 2: run it 3 times
+nc localhost 6017    # netcat works as a client too
 ```
+
+By hand: `gcc -Wall -Wextra -o qotd_server qotd_server.c`, and the same for `qotd_client`. `fortune` must be installed (`sudo apt install fortune-mod`, see step 1 [below](#setting-up-a-qotd-server-on-port-17)).
 
 ### Output
 
+Three runs of the client against one server:
+
 ```
-$ ./q_5
-Received message: Life is to you a dashing and bold adventure.
+$ ./qotd_client
+Received message: In the Spring, I have counted 136 different kinds of weather inside of
+24 hours.
+		-- Mark Twain, on New England weather
+$ ./qotd_client
+Received message: A kind of Batman of contemporary letters.
+		-- Philip Larkin on Anthony Burgess
+$ ./qotd_client
+Received message: You will step on the night soil of many countries.
 ```
 
-The quote is different on every run, since a new `fortune` process picks one for each connection.
+After the third client the server prints `Enough quotes for the day! Goodbye...` and exits. A fourth client gets `connect: Connection refused` and exits with status 1.
 
-If `qotd.socket` is not running, nothing is listening on port 17. `connect()` then fails, the program prints `connect: Connection refused` and exits with status 1.
+### Testing the edge cases
+
+The normal case worked from the start. The other branches were tested by putting the server into these situations, and the first version failed all three. The table shows the final behaviour. Each row was checked again after the fixes.
+
+| Situation | How it was produced | What happens |
+| --- | --- | --- |
+| A quote of 512 characters or more | A fake `fortune` script placed first in `PATH`, printing 20 long lines on its first call and a short quote after that | Client 1 gets `Error! Quote too long, try again!...`. Clients 2 and 3 get their short quotes. |
+| Several clients in a row | `ps --ppid <server pid>`, and counting sockets in `/proc/<pid>/fd`, after every client | No zombies. One socket open between clients: the listening one. |
+| Restart right after Ctrl+C, with connections still in `TIME_WAIT` | Starting the server again straight away | `bind()` succeeds and the server works. |
+| A second server while the first is running | Starting `./qotd_server` in another terminal | `bind: Address already in use`, exit status 1. `SO_REUSEADDR` does not let two listening sockets share a port. |
+
+### Bugs hit along the way
+
+**One long quote spoiled every quote after it.** The fake `fortune` test printed `Buffer overflow occurred...` three times: for the long quote and for the two short ones after it. `msg` was cleared at the bottom of the loop, after `send()`. The overflow branch's `continue` skipped that, so the next quote was appended to the ~500 characters left over and overflowed as well. The fix was to clear `msg` at the **top** of the loop, where no path can skip it.
+
+**The clearing was a 1-byte `memset()`.** It read `memset(msg, 0, sizeof(memset))`, which is the size of the *function* `memset` (1 in GCC), not of `msg`. It happened to work, because a `'\0'` in `msg[0]` makes `strlen()` return 0 and `strcat()` write from the start. Now it is `sizeof(msg)`.
+
+**Clients hung after a long quote.** The overflow branch sent nothing and went back to `accept()` without closing the client's socket. The client sat in `recv()` until the server exited. Now the client gets an error message and its socket is closed.
+
+**`*msg = "..."` does not copy a string.** The first version of the error message assigned a string literal to `*msg`, which is the single `char` `msg[0]`. That puts one byte of the literal's *address* into the array. Arrays cannot be assigned with `=`. `strcpy()` copies the characters.
+
+**Zombie `sh` processes.** `popen()` ran once per client but `pclose()` ran once, after the loop. Every earlier `fortune` child became a zombie, exactly as in [q_1](#q_1-creating-a-zombie-process). `pclose()` now runs at the end of each path through the loop.
+
+**A leaked socket per client.** `client_socket` was never closed. Counting entries in `/proc/<pid>/fd` showed one more socket after every client: harmless for 3 clients, but a server that runs forever would eventually hit the per-process limit on open descriptors (`ulimit -n`). `close(client_socket)` now ends each path.
+
+**`accept: Bad file descriptor` on the second client.** While adding the cleanup, `close(qotd_server_socket)` went inside the loop in place of `close(client_socket)`. The first client was served. Then the listening socket was gone, and the next `accept()` was called on a closed descriptor. The listening socket is closed once, after the loop.
+
+**A silent `bind()` failure.** After a killed run, port 6017 was still in `TIME_WAIT` and `bind()` failed. It was not checked, so `listen()` gave the socket a random port (47255 in `ss -ltnp`). Every client got `Connection refused` while the server waited forever. Checking the return value turned this into `bind: Address already in use`. `SO_REUSEADDR` removed the failure itself.
+
+### `popen()`: reading another program's output
+
+```c
+FILE *fp = popen("fortune", "r");
+...
+pclose(fp);
+```
+
+`popen()` is a shortcut for three system calls covered earlier:
+
+1. `pipe()` creates a one-way channel: bytes written to one end can be read from the other.
+2. `fork()` creates a child process.
+3. In the child, the write end becomes stdout, and `exec` runs `/bin/sh -c "fortune"`.
+
+The parent gets the read end wrapped in a `FILE *`, so `fgets()` reads the child's output as if it were a file.
+
+| Mode | The parent | The child |
+| --- | --- | --- |
+| `"r"` | reads the child's stdout | writes to stdout as usual |
+| `"w"` | writes to the child's stdin | reads stdin as usual |
+
+**`pclose()` is `wait()` for a `popen()` child.** It closes the pipe and waits for the child, collecting its exit status. A child that exits before `pclose()` is called stays a zombie until then, exactly as in [q_1](#q_1-creating-a-zombie-process). `popen()` returns `NULL` if the pipe or fork fails, but not if the command does not exist: the shell then prints an error and exits, and the reader just sees end-of-file.
 
 ### Setting up a QOTD server on port 17
+
+Port 17 is "unavailable" in the book because a real system may already run a QOTD service there, and because only root may bind to ports below 1024. To see the real service, one can be set up with systemd. The client then talks to it after changing `QOTD_PORT` to 17. Neither the server nor `fortune` change: the systemd version does with configuration what qotd_server.c does in C.
 
 These steps are for Ubuntu 22.04. They use **systemd socket activation**: systemd itself listens on port 17 and starts the quote program only when a client connects. It is the modern form of the old `inetd` super-server.
 
@@ -464,7 +539,7 @@ systemctl status qotd.socket    # should show "active (listening)"
 nc localhost 17                 # netcat as a ready-made client: prints a quote
 ```
 
-`nc` doing the same job as `./q_5` is a quick way to tell apart a problem in the service from a problem in the program.
+`nc` doing the same job as `./qotd_client` is a quick way to tell apart a problem in the service from a problem in the program.
 
 **To turn it off again:**
 
@@ -473,18 +548,33 @@ sudo systemctl disable --now qotd.socket
 sudo ufw delete allow 17/tcp
 ```
 
+**Comparing it with qotd_server.c:**
+
+| | qotd_server.c | systemd |
+| --- | --- | --- |
+| Who calls `bind()`, `listen()`, `accept()` | the program | systemd (`ListenStream=17`, `Accept=yes`) |
+| How `fortune` is started | `popen()`, once per client | a new `qotd@.service` instance per client |
+| How the quote reaches the client | read through a pipe, then `send()` | `fortune`'s stdout *is* the socket (`StandardOutput=socket`) |
+| Length limit | checked by the program | none: `fortune` sends whatever it prints |
+| Runs between clients | yes, blocked in `accept()` | only systemd; no QOTD process exists |
+
 ### Learnings
 
 - **Well-known ports.** Ports 0 to 1023 are assigned to standard services (17 QOTD, 13 daytime, 22 SSH, 80 HTTP). On Linux only root may bind to them, which is why the book moves the exercise to 6017.
-- **The client does not care what the server is.** q_5 only knows "TCP, port 17". It cannot tell a hand-written C server from systemd plus `fortune`, and `nc` cannot tell q_5's role apart from its own. That is the point of a protocol.
-- **Socket activation.** Nothing runs between connections: systemd holds the listening socket, and a `fortune` process exists only while it serves one client. A server written in C would instead loop on `accept()` and stay in memory all the time.
-- **A socket is a file descriptor.** `StandardOutput=socket` works because a connected socket can stand in for stdout. `fortune` uses ordinary `write()`s and does not know there is a network.
-- **One quote, then hang up.** RFC 865 has the server send one quote and close the connection, so the client needs only one `connect()` and one `recv()`, and sends nothing.
+- **Set up once, serve in a loop.** `socket()` and `bind()` run once: the port belongs to the server for its whole life. Only `accept()` and the work for one client go inside the loop. `listen()` also only needs to run once.
+- **Every path through the loop must clean up.** Each client opens three things: a socket, a pipe and a child process. A `continue` or `return` that skips the cleanup leaks them. Putting resets at the top of the loop, and giving every branch the same cleanup, avoids that.
+- **Two kinds of socket.** The listening socket stays open across clients and is closed once, at the end. Each `accept()` gives a new socket for one client: `send()` goes there, and it is closed when that client is done. Mixing them up gave `Bad file descriptor`.
+- **The client does not care what the server is.** qotd_client only knows "TCP, port 6017". It cannot tell qotd_server from systemd plus `fortune` on port 17, or from `nc -l 6017`. That is the point of a protocol.
+- **Reading a program's output.** `popen()` combines `pipe()`, `fork()` and `exec` in one call, and `pclose()` is its `wait()`. Every `popen()` needs its own `pclose()`.
+- **Building a string with a limit.** `fgets()` reads at most `size - 1` characters and stops after a newline, so a quote arrives in several pieces. Before each `strcat()` the total length is checked, so `msg` can never overflow. A quote that is too long is not cut off; the client gets an error message instead.
+- **Copying strings.** An array cannot be assigned with `=`. `*msg = "..."` stores part of an address in one `char`. `strcpy()` (or `snprintf()` with a size) copies the characters.
+- **Unchecked calls fail silently.** A failed `bind()` did not stop the server. `listen()` then gave the socket a random port, and the server waited where no client would look. Each system call's return value is the only place its failure is reported.
+- **`TIME_WAIT`.** After a TCP connection is closed, the side that closed first keeps the address reserved for a while (about 60 seconds on Linux), so stray packets from the old connection cannot reach a new one. Restarting a server immediately can therefore fail in `bind()` with `EADDRINUSE`. The `SO_REUSEADDR` socket option, set with `setsockopt()` before `bind()`, allows the bind anyway. It does not allow two servers that are both running to listen on the same port.
 
 ### Questions to explore next
 
-1. The question asks for a *server* on port 6017. What would `tcp_server.c` from [socket_programming](../standalone/socket_programming/) need to change to become one? The port is the easy part. How would it hold several quotes and pick one, and how would it keep serving clients after the first one?
-2. `qotd` is never zeroed and only 512 bytes are read. If the quote is shorter than 512 bytes, what comes after it in the buffer? Does `printf("%s")` know where the quote ends? What does `recv()`'s return value tell you that would make this safe?
-3. If the quote were 512 bytes or longer, where would the terminating `'\0'` be? `fortune -s` limits it to short quotes. How long are those?
-4. RFC 865 also defines QOTD over UDP. What would change in the unit file and in q_5.c to use it, and which calls would the client no longer need?
-5. Change `QOTD_PORT` to 6017 without a server running there. What error do you get, and how is it different from what a firewall that silently drops packets would cause?
+1. `client_len` is passed to `accept()` without a value, as in tcp_server.c. What does `man 2 accept` say it must hold when the call starts?
+2. The server always sends 512 bytes, and the client prints them with `%s`. Who guarantees the `'\0'`, the server or the client? What would the client print with a server that sends only `strlen(msg)` bytes, such as systemd plus `fortune` on port 17?
+3. In the overflow branch the server stops reading with `break` while `fortune` may still be writing, and then calls `pclose()`. What happens to a process that writes to a pipe nobody reads any more? (Look up `SIGPIPE`.)
+4. The book's date server loops forever. What would change if `MAX_QUOTES` were removed, and how would the server then be stopped cleanly?
+5. The server handles one client at a time: while `fortune` runs, the next client waits in the `listen()` queue. How would `fork()` after `accept()` let it serve several clients at once, and which process would close which socket?

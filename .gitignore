@@ -1,13 +1,15 @@
-# Compiled executables (build them with `make`).
-# They have no extension, so ignore everything in a program directory except its sources.
-# Add the same two lines for each new directory of programs.
-standalone/*
-!standalone/*.c
-!standalone/shared_memory/
-standalone/shared_memory/*
-!standalone/shared_memory/*.c
-!standalone/shared_memory/README.md
-*.o
+# Compiled executables (build them with `make`) have no extension, so they
+# cannot be matched by name. Instead, ignore everything and re-include only
+# what belongs in the repository: directories, sources, docs and images.
+# New program directories need no extra lines.
+*
+!*/
+!*.c
+!*.h
+!*.md
+!*.png
+!Makefile
+!.gitignore
 
 # Editor files (includes the large IntelliSense database)
 .vscode/
