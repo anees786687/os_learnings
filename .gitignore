@@ -1,6 +1,6 @@
 # Compiled executables (build them with `make`) have no extension, so they
 # cannot be matched by name. Instead, ignore everything and re-include only
-# what belongs in the repository: directories, sources, docs and images.
+# what belongs in the repository: directories, sources, docs, images and text data.
 # New program directories need no extra lines.
 *
 !*/
@@ -8,6 +8,7 @@
 !*.h
 !*.md
 !*.png
+!*.txt
 !Makefile
 !.gitignore
 

@@ -92,7 +92,7 @@ int main(){
         // 5. accept(): block until a client connects. Returns a new socket
         // for this one client; qotd_server_socket keeps listening.
         struct sockaddr_in client_address;
-        socklen_t client_len;
+        socklen_t client_len = sizeof(client_address);
         int client_socket = accept(qotd_server_socket,(struct sockaddr *)&client_address,&client_len);
 
         if(client_socket < 0){

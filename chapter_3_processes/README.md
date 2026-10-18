@@ -10,7 +10,8 @@ Solutions to the programming exercises of the Processes chapter, with what each 
 | [q_2.c](q_2.c) | Pid manager, bitmaps | Tracking which PIDs are in use with one bit per PID. |
 | [q_3.c](q_3.c) | Collatz sequence, `fork()` + `wait()` | Work done in a child stays in the child's copy of the data, so the child has to print it. |
 | [q_4.c](q_4.c) | Collatz sequence through shared memory | A child hands its results to the parent through a region both have mapped, and the parent checks how the child ended before using them. |
-| [q_5/](q_5/) | Quote of the day, TCP sockets, `popen()` | A server on port 6017 that answers each client with a quote produced by the `fortune` program, and a client that prints it. |
+| [q_5/](q_5/) | Quote of the day, TCP sockets, `popen()` | A server on port 6017 that answers each client with a quote produced by the `fortune` program, and a client that prints it. A step-by-step guide to writing it is in [standalone/socket_programming](../standalone/socket_programming/README.md#writing-a-server-and-client-step-by-step). |
+| [q_6/](q_6/) | Haiku server, TCP sockets, reading a file | A server on port 5575 that sends the haiku in [haikus.txt](q_6/haikus.txt) one per client, and a client that collects them until the server says there are none left. |
 
 ## q_1: creating a zombie process
 
@@ -339,7 +340,7 @@ All three exit with status 1, and after every one of them `ls /dev/shm` shows no
 
 **Task:** port numbers below 1024 are *well known*: each one belongs to a standard service. Port 17 is the **Quote of the Day** (QOTD) service, defined in RFC 865. When a client connects, the server sends a quote and closes the connection. The book asks for its date server (Figure 3.21) to be changed so it delivers a quote instead of the date. The quote must be fewer than 512 printable ASCII characters and may span several lines. Port 17 is well known and therefore unavailable, so the server listens on **port 6017**. The date client (Figure 3.22) is used to read the quotes.
 
-The sockets API itself, what each call does and why, is covered in [standalone/socket_programming/](../standalone/socket_programming/README.md). This section covers what is specific to the exercise.
+The sockets API itself, what each call does and why, is covered in [standalone/socket_programming/](../standalone/socket_programming/README.md), together with a [step-by-step guide](../standalone/socket_programming/README.md#writing-a-server-and-client-step-by-step) that builds this server and client from an empty file. This section covers what is specific to the exercise.
 
 | File | Role | What it does |
 | --- | --- | --- |
@@ -573,8 +574,129 @@ sudo ufw delete allow 17/tcp
 
 ### Questions to explore next
 
-1. `client_len` is passed to `accept()` without a value, as in tcp_server.c. What does `man 2 accept` say it must hold when the call starts?
-2. The server always sends 512 bytes, and the client prints them with `%s`. Who guarantees the `'\0'`, the server or the client? What would the client print with a server that sends only `strlen(msg)` bytes, such as systemd plus `fortune` on port 17?
-3. In the overflow branch the server stops reading with `break` while `fortune` may still be writing, and then calls `pclose()`. What happens to a process that writes to a pipe nobody reads any more? (Look up `SIGPIPE`.)
-4. The book's date server loops forever. What would change if `MAX_QUOTES` were removed, and how would the server then be stopped cleanly?
-5. The server handles one client at a time: while `fortune` runs, the next client waits in the `listen()` queue. How would `fork()` after `accept()` let it serve several clients at once, and which process would close which socket?
+1. The server always sends 512 bytes, and the client prints them with `%s`. Who guarantees the `'\0'`, the server or the client? What would the client print with a server that sends only `strlen(msg)` bytes, such as systemd plus `fortune` on port 17?
+2. In the overflow branch the server stops reading with `break` while `fortune` may still be writing, and then calls `pclose()`. What happens to a process that writes to a pipe nobody reads any more? (Look up `SIGPIPE`.)
+3. The book's date server loops forever. What would change if `MAX_QUOTES` were removed, and how would the server then be stopped cleanly?
+4. The server handles one client at a time: while `fortune` runs, the next client waits in the `listen()` queue. How would `fork()` after `accept()` let it serve several clients at once, and which process would close which socket?
+
+**Resolved later:** `client_len` was passed to `accept()` without a value. It worked here by luck, and the same line made the haiku server fail with `accept: Invalid argument` (see [q_6](#q_6-a-haiku-server)). It is now `socklen_t client_len = sizeof(client_address);`.
+
+## q_6: a haiku server
+
+**Task:** a haiku is a three-line poem of five, seven and five syllables. Write a haiku server that listens on port 5575 and responds to each client with a haiku. The date client from Figure 3.22 can be used to read them.
+
+The server is built on the same skeleton as q_5: see the [step-by-step guide](../standalone/socket_programming/README.md#writing-a-server-and-client-step-by-step). Only the source of the message changes, plus a client that asks repeatedly.
+
+| File | Role | What it does |
+| --- | --- | --- |
+| [q_6/haiku_server.c](q_6/haiku_server.c) | Server | Binds to port 5575 and sends the haiku from `haikus.txt` in order, one per client. Skips a haiku that is too long and sends an error haiku in its place. When the file is used up, answers the next client with `No more haikus` and exits. |
+| [q_6/haiku_client.c](q_6/haiku_client.c) | Client | Connects, prints one haiku, closes, and repeats every 2 seconds until the server says `No more haikus` or is no longer listening. |
+| [q_6/haikus.txt](q_6/haikus.txt) | Data | Ten 5-7-5 haiku about the topics of this repository. Each haiku is three lines; a blank line separates them. |
+| [q_6/reading_files.c](q_6/reading_files.c) | Experiment | Reads `haikus.txt` one haiku at a time with `fgets()`, to try out the blank-line logic before putting it in the server. |
+
+**Where the haiku come from.** No haiku collection ships with `fortune`, and published English translations rarely keep 5-7-5 (Japanese counts sound units, not English syllables) and are often under copyright. So the haiku were written for this repository and counted by hand.
+
+**How it works:**
+
+| Order | Process | Step |
+| --- | --- | --- |
+| 1 | server | `socket()`, `setsockopt(SO_REUSEADDR)`, `bind()` to port 5575, `fopen("haikus.txt")`, once. |
+| 2 | server | `listen()`, then `accept()` waits for a client. |
+| 3 | client | Creates a **new** socket and `connect()`s. |
+| 4 | server | If the file was already used up: sends `No more haikus`, closes, exits. |
+| 5 | server | Otherwise reads lines with `fgets()` and `strcat()`s them into `haiku` until a blank line, then sends it. The last haiku has no blank line after it, so end of file sends it instead. |
+| 6 | client | `recv()`, prints the haiku, `close()`s, waits 2 seconds, back to 3. Stops on `No more haikus`, or when `connect()` fails with `ECONNREFUSED`. |
+| 7 | server | Clears the buffers, closes the client's socket, back to 2. |
+
+The `FILE *` stays open for the whole run, and it remembers how far the file has been read. That position is what makes each client get the *next* haiku.
+
+### Running it
+
+```sh
+make                       # from the repository root
+cd chapter_3_processes/q_6
+./haiku_server             # terminal 1; must be started in this folder
+./haiku_client             # terminal 2
+```
+
+### Output
+
+```
+$ ./haiku_client
+Received haiku: Fork returns two times
+The parent waits for its child
+Then both go their ways
+
+Received haiku: My child process ends
+Its parent never calls wait
+A zombie lingers
+
+...
+
+Received haiku: The pipe carries words
+From fortune's mouth to my ears
+pclose ends the tale
+
+No more haikus
+
+```
+
+Both programs exit with status 0, and the server prints `No more haikus for you! Goodbye!`.
+
+### Testing the edge cases
+
+Test files were placed in a separate folder, and the server was started there:
+
+| Situation | What happens |
+| --- | --- |
+| A haiku longer than 512 bytes in the middle of the file | The server prints `Buffer overflow detected!`, and that client gets an error haiku (`Buffer overflow / lost the haiku / new haiku inevitable`). The next client gets the haiku after the bad one. |
+| The long haiku is the last one | The error haiku, then `No more haikus` for the next client. |
+| No server running | The client prints `Server port is closed! Exiting...` and exits with status 0. |
+| Server started from another folder | `fopen: No such file or directory`, exit status 1. |
+| A haiku of exactly 512 characters (four lines of 127 + `\n`) | **Fails**: see question 1. A build with `-O2` aborts with `*** buffer overflow detected ***`, and a plain build writes one byte past `haiku` without noticing. |
+
+### Bugs hit along the way
+
+**The server died silently, twice (`SIGPIPE`, exit status 141).** `send()` was called on the listening socket instead of the socket returned by `accept()`: first in the normal path, later again in the overflow branch. Sending on an unconnected socket raises `SIGPIPE`, which kills the process before `perror()` runs. `kill -l 13` names the signal.
+
+**Debug `printf`s that never appeared.** Progress markers like `printf("5")` had no `\n`, so they stayed in `stdout`'s buffer, and a process killed by a signal never flushes it. With a `\n` (or `fprintf(stderr, ...)`) they show up.
+
+**The port was 50965.** Both the server and the client wrote `sin_port = PORT` without `htons()`. They agreed with each other, so it seemed to work, but `ss -ltnp` showed port 50965 (5575 = `0x15C7`, bytes swapped = `0xC715`), and `nc localhost 5575` was refused.
+
+**`if (accept < 0)`.** This compared the *function* `accept` with 0, and the compiler warned `ordered comparison of pointer with integer zero`. The result of `accept()` was stored in a variable that was then never used (`unused variable`): the same bug, seen from the other side.
+
+**Only the blank line was sent.** `fgets()` overwrites its buffer on every call, so after the loop `haiku` held only the last line read, the blank one. The lines have to be appended to a second buffer with `strcat()`, as q_5 did with `fortune`'s output. Printing each line inside the loop made it look right on the server side.
+
+**The blank-line check looked at the wrong array.** `if (haiku[0] == '\n')` tested the haiku being built (always empty at that point) instead of the line just read, so the loop read the whole file for the first client.
+
+**`free(): double free detected`.** `fclose(fp)` ran inside the end-of-file branch and again after the loop. `fclose()` frees the `FILE`, and freeing it twice makes the C library abort.
+
+**The goodbye was sent but never read.** The last client got the last haiku and then the goodbye, as two 512-byte `send()`s. The client called `recv()` once, so it never read the second one. TCP is a byte stream: two sends do not make two receives. Now the goodbye goes to a separate, later client instead of the last haiku.
+
+**`accept: Invalid argument`.** `client_address_len` was not initialised. It worked for a while, then failed after unrelated edits changed what was left on the stack. `man 2 accept` lists `EINVAL` for an invalid *addrlen*. Fixed with `= sizeof(client_address)` in all three servers.
+
+**The client printed blanks forever.** It connected once and called `recv()` in a loop. The server closes each connection after one haiku, so every later `recv()` returned 0, which was not checked. Calling `connect()` again on the same socket gave `Transport endpoint is already connected`, and reusing it after `close()` gave `Bad file descriptor`. Each haiku needs a new socket: `socket()`, `connect()`, `recv()`, `close()`, all inside the loop.
+
+**A long haiku crashed the server.** `strcat()` had no length check, and with `-O2` a test haiku of 800 characters aborted with `*** buffer overflow detected ***`. The check came next, and then:
+
+**The rest of a long haiku arrived as the next haiku.** After the error, the lines of the bad haiku that had not been read yet were still in the file. Clearing `buffer` and `haiku` does not move the file position, so the next client's `fgets()` started in the middle of the bad haiku. A loop that reads and discards lines up to the next blank line fixed it.
+
+**`"\new haiku"`.** The backslash and the `n` became a newline, and the client printed `ew haiku inevitable`.
+
+### Learnings
+
+- **One connection, one message.** The server closes each connection after one haiku. A client that wants several must make a new connection, with a new socket, for each one: a TCP socket can be connected only once, and it cannot be used after `close()`.
+- **`recv()` returning 0** means the other side closed the connection. It is not an error and does not fill the buffer, so it has to be checked separately from `-1`.
+- **A file position is state.** The `FILE *` remembers how far it has read. That is what gives each client the next haiku, and also why a skipped haiku has to be *read past*, not just cleared from memory.
+- **The last record has no separator.** Data split by blank lines ends without one, so end of file has to complete the last record too.
+- **Announcing the end beats failing at the end.** With a `No more haikus` message the client knows the server is finished. Without one, it can only guess from `Connection refused`, which a crashed server produces too.
+- **Undefined behaviour can wait.** The uninitialised `socklen_t` and the off-by-one in the length check both worked in normal runs. Testing at the exact boundary, and compiling with `-O2` (which turns on glibc's buffer overflow checks), is what exposed them.
+- **Signals hide errors.** A process killed by a signal prints nothing on its own and loses its buffered output. The exit status (`128 + signal number`) is often the only clue.
+
+### Questions to explore next
+
+1. The length check is `strlen(buffer) + strlen(haiku) > HAIKU_SIZE`. With 384 characters in `haiku` and a line of 128, the sum is 512, so the check passes. How many bytes does `strcat()` then write into the 512-byte `haiku`, counting the `'\0'`? What should the right-hand side be? (The test above, four lines of 127 characters plus `\n`, shows the effect.)
+2. `connect_stat` is never used, and the compiler says so. The client only checks `errno == ECONNREFUSED`. What happens on any other `connect()` failure, and what does `recv()` do on a socket that never connected?
+3. When the bad haiku is the last one, the end-of-file block sends a second, empty message to the same client after the error haiku. Why does the client never notice it?
+4. If `haikus.txt` ended with a blank line after the last haiku, what would the client after the last haiku receive?
+5. Instead of stopping, the server could `rewind(fp)` and start again from the first haiku. What else would have to change, and how would a client then know when to stop?

@@ -50,7 +50,7 @@ int main(){
     // the size of the address the kernel actually stored.
     // The connection is full duplex: both sides can send and receive on it.
     struct sockaddr_in client_address;
-    socklen_t client_len;
+    socklen_t client_len = sizeof(client_address);
     int client_socket = accept(server_socket, (struct sockaddr *)&client_address,&client_len);
 
     // 6. send(): write the message to the client's socket, not to the

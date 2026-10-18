@@ -29,8 +29,8 @@ To build a single program by hand: `gcc -Wall -Wextra -o standalone/test_1 stand
 | --- | --- |
 | [standalone/](standalone/) | Self-contained programs on process creation, waiting and `exec` |
 | [standalone/shared_memory/](standalone/shared_memory/) | A producer and a consumer that communicate through POSIX shared memory. The lesson is in its [README](standalone/shared_memory/README.md) |
-| [standalone/socket_programming/](standalone/socket_programming/) | A TCP server and client that talk over a socket on port 9002: `socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recv`. The lesson is in its [README](standalone/socket_programming/README.md) |
-| [chapter_3_processes/](chapter_3_processes/) | Silberschatz chapter 3 programming exercises: zombie process, pid manager, Collatz sequence in a child process, the same sequence passed to the parent through shared memory, and a quote-of-the-day server on port 6017 that serves `fortune` output through `popen()`, with its client. Details in its [README](chapter_3_processes/README.md) |
+| [standalone/socket_programming/](standalone/socket_programming/) | A TCP server and client that talk over a socket on port 9002: `socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recv`. Its [README](standalone/socket_programming/README.md) explains every call and has a step-by-step guide to writing a robust server and client |
+| [chapter_3_processes/](chapter_3_processes/) | Silberschatz chapter 3 programming exercises: zombie process, pid manager, Collatz sequence in a child process, the same sequence passed to the parent through shared memory, a quote-of-the-day server on port 6017 that serves `fortune` output through `popen()`, and a haiku server on port 5575 that serves poems from a text file, each with its client. Details in its [README](chapter_3_processes/README.md) |
 
 Directories are named after the textbook chapter they belong to. The rest of this page covers the standalone programs and the concepts behind them.
 
