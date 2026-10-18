@@ -1,0 +1,39 @@
+Fork returns two times
+The parent waits for its child
+Then both go their ways
+
+My child process ends
+Its parent never calls wait
+A zombie lingers
+
+Two processes share
+One page of memory mapped
+No copies between
+
+Bind, listen, accept
+The server waits on its port
+A client knocks once
+
+Connection refused
+No server listens on port
+I knock on the void
+
+Segmentation fault
+I wrote past my array's end
+Core dumped, lesson learned
+
+The kernel decides
+Which process runs next and when
+Fairness, not favour
+
+Morning compile runs
+No warnings and no errors
+Coffee has gone cold
+
+Time wait holds the port
+Sixty seconds of silence
+Reuse address, please
+
+The pipe carries words
+From fortune's mouth to my ears
+pclose ends the tale
