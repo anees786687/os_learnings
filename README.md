@@ -30,7 +30,7 @@ To build a single program by hand: `gcc -Wall -Wextra -o standalone/test_1 stand
 | [standalone/](standalone/) | Self-contained programs on process creation, waiting and `exec` |
 | [standalone/shared_memory/](standalone/shared_memory/) | A producer and a consumer that communicate through POSIX shared memory. The lesson is in its [README](standalone/shared_memory/README.md) |
 | [standalone/socket_programming/](standalone/socket_programming/) | A TCP server and client that talk over a socket on port 9002: `socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recv`. Its [README](standalone/socket_programming/README.md) explains every call and has a step-by-step guide to writing a robust server and client |
-| [chapter_3_processes/](chapter_3_processes/) | Silberschatz chapter 3 programming exercises: zombie process, pid manager, Collatz sequence in a child process, the same sequence passed to the parent through shared memory, a quote-of-the-day server on port 6017 that serves `fortune` output through `popen()`, and a haiku server on port 5575 that serves poems from a text file, each with its client. Details in its [README](chapter_3_processes/README.md) |
+| [chapter_3_processes/](chapter_3_processes/) | Silberschatz chapter 3 programming exercises: zombie process, pid manager, Collatz sequence in a child process, the same sequence passed to the parent through shared memory, a quote-of-the-day server on port 6017 that serves `fortune` output through `popen()`, a haiku server on port 5575 that serves poems from a text file, and an echo server that returns any amount of data, binary included, with notes on TCP flow control. Each comes with its client. Details in its [README](chapter_3_processes/README.md) |
 
 Directories are named after the textbook chapter they belong to. The rest of this page covers the standalone programs and the concepts behind them.
 
@@ -225,3 +225,7 @@ if (errno == ERANGE) {
 - Passing a value where a system call expects a pointer, e.g. `sizeof(addr)` as the last argument of `accept()`. The compiler only warns (`makes pointer from integer without a cast`), so compile with `-Wall -Wextra` and read the warnings.
 - Calling a function without including its header (`implicit declaration of function`), e.g. `close()` without `<unistd.h>`. `man 2 <name>` lists the header in its SYNOPSIS.
 - Reading `argv[1]` without checking `argc` first: with no argument it is `NULL`, and the program crashes instead of printing an error.
+- Appending to an argument with `strcat(argv[i], ...)`: each argument has room only for itself, and the overflow lands on the next one. Copy it into a buffer of known size first.
+- Calling `recv()` once and assuming the whole message arrived. TCP is a byte stream: read in a loop until `recv()` returns 0. See [q_7](chapter_3_processes/q_7/README.md).
+- Sending `sizeof(buffer)` bytes, or using `strlen()` and `%s` on received data, instead of the byte count `recv()` returned.
+- Waiting for the other side to close while it waits for you: call `shutdown(fd, SHUT_WR)` once you have nothing more to send.

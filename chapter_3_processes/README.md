@@ -12,6 +12,7 @@ Solutions to the programming exercises of the Processes chapter, with what each 
 | [q_4.c](q_4.c) | Collatz sequence through shared memory | A child hands its results to the parent through a region both have mapped, and the parent checks how the child ended before using them. |
 | [q_5/](q_5/) | Quote of the day, TCP sockets, `popen()` | A server on port 6017 that answers each client with a quote produced by the `fortune` program, and a client that prints it. A step-by-step guide to writing it is in [standalone/socket_programming](../standalone/socket_programming/README.md#writing-a-server-and-client-step-by-step). |
 | [q_6/](q_6/) | Haiku server, TCP sockets, reading a file | A server on port 5575 that sends the haiku in [haikus.txt](q_6/haikus.txt) one per client, and a client that collects them until the server says there are none left. |
+| [q_7/](q_7/) | Echo server, TCP as a byte stream, flow control | A server on port 5575 that sends back whatever a client sends, any amount and binary too, through a 512-byte buffer, and a client that ends its side with `shutdown(SHUT_WR)`. Its own [README](q_7/README.md) has the experiments, the bugs and the learnings. |
 
 ## q_1: creating a zombie process
 
