@@ -4,7 +4,7 @@ C programs written while studying operating systems. The repository follows *Ope
 
 Every program carries a comment block explaining what it demonstrates and what was learned from it. Each chapter directory has its own README with the output of every exercise and the bugs hit along the way.
 
-Planned next: the projects and labs from *Operating Systems: Three Easy Pieces* (OSTEP).
+Planned next: the projects and labs from *Operating Systems: Three Easy Pieces* (OSTEP). The week-by-week plan from here to embedded systems, with every reading and exercise, is in [roadmap.html](roadmap.html) (open it in a browser). The terminal commands used to debug these programs, with examples and how to read their output, are in [debug_commands.html](debug_commands.html).
 
 The programs use POSIX system calls, so they need Linux, macOS or WSL.
 
